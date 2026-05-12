@@ -19,9 +19,13 @@ import "unsafe"
 // Read32 reads a 32-bit value from a MMIO register at addr.
 // The read is volatile — the compiler will not cache or elide it.
 //
+// The uintptr→unsafe.Pointer conversion is intentional: addr is a physical
+// hardware register address, not a Go heap pointer. go vet's unsafeptr check
+// is suppressed for this package with -unsafeptr=false in CI.
+//
 //go:nosplit
 func Read32(addr uintptr) uint32 {
-	return *(*uint32)(unsafe.Pointer(addr))
+	return *(*uint32)(unsafe.Pointer(addr)) //nolint:unsafeptr
 }
 
 // Write32 writes a 32-bit value to a MMIO register at addr.
