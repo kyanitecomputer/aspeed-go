@@ -65,18 +65,34 @@ func Write8(addr uintptr, val uint8) {
 }
 
 // Read64 reads a 64-bit value from a MMIO register at addr.
-// Used for 64-bit registers on 64-bit targets (AST2700 CA35).
+// The uint64 address matches the TamaGo reg package API for 64-bit targets.
 //
 //go:nosplit
-func Read64(addr uintptr) uint64 {
-	return *(*uint64)(unsafe.Pointer(addr))
+func Read64(addr uint64) uint64 {
+	return *(*uint64)(unsafe.Pointer(uintptr(addr)))
 }
 
 // Write64 writes a 64-bit value to a MMIO register at addr.
 //
 //go:nosplit
-func Write64(addr uintptr, val uint64) {
-	*(*uint64)(unsafe.Pointer(addr)) = val
+func Write64(addr uint64, val uint64) {
+	*(*uint64)(unsafe.Pointer(uintptr(addr))) = val
+}
+
+// Read is a TamaGo-compatible alias for Read32 using uint32 address.
+// Chiptool-generated Go PAC code uses this signature.
+//
+//go:nosplit
+func Read(addr uint32) uint32 {
+	return *(*uint32)(unsafe.Pointer(uintptr(addr)))
+}
+
+// Write is a TamaGo-compatible alias for Write32 using uint32 address.
+// Chiptool-generated Go PAC code uses this signature.
+//
+//go:nosplit
+func Write(addr uint32, val uint32) {
+	*(*uint32)(unsafe.Pointer(uintptr(addr))) = val
 }
 
 // SetBits32 sets the given bits in a 32-bit MMIO register (read-modify-write).
