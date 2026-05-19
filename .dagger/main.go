@@ -33,6 +33,7 @@ func (m *AspeedGo) goContainer(src *dagger.Directory) *dagger.Container {
 func (m *AspeedGo) Build(
 	ctx context.Context,
 	// +defaultPath="."
+	// +ignore=["go.work", "go.work.sum"]
 	src *dagger.Directory,
 ) error {
 	_, err := m.goContainer(src).
@@ -45,6 +46,7 @@ func (m *AspeedGo) Build(
 func (m *AspeedGo) Test(
 	ctx context.Context,
 	// +defaultPath="."
+	// +ignore=["go.work", "go.work.sum"]
 	src *dagger.Directory,
 ) error {
 	_, err := m.goContainer(src).
@@ -59,6 +61,7 @@ func (m *AspeedGo) Test(
 func (m *AspeedGo) Vet(
 	ctx context.Context,
 	// +defaultPath="."
+	// +ignore=["go.work", "go.work.sum"]
 	src *dagger.Directory,
 ) error {
 	_, err := m.goContainer(src).
@@ -71,6 +74,7 @@ func (m *AspeedGo) Vet(
 func (m *AspeedGo) Ci(
 	ctx context.Context,
 	// +defaultPath="."
+	// +ignore=["go.work", "go.work.sum"]
 	src *dagger.Directory,
 ) (string, error) {
 	steps := []string{}

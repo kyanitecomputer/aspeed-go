@@ -1,2 +1,7 @@
 # Go build cache
 /vendor/
+
+# Local workspace file — redirects aspeed-go-pac to ../aspeed-data/aspeed-go-pac
+# Each developer creates their own; not committed.
+go.work
+go.work.sum
