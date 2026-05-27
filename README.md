@@ -1,10 +1,28 @@
 # aspeed-go
 
-Go HAL for ASPEED SoC coprocessors, targeting bare-metal [TamaGo](https://github.com/usbarmory/tamago) (`GOOS=tamago`) firmware.
+Go HAL for ASPEED SoC **main application processor (AP) cores**, targeting bare-metal [TamaGo](https://github.com/usbarmory/tamago) (`GOOS=tamago`) firmware.
 
 ```
 https://github.com/kyanitecomputer/aspeed-go
 ```
+
+## Role in the system
+
+The AP cores (Cortex-A7 on AST2600, quad Cortex-A35 on AST2700) run bare-metal
+Go via TamaGo. They own the management plane: OpenBMC-equivalent services,
+Redfish, network stack, and user-facing APIs. Auxiliary processor cores run
+separate firmware:
+
+| Core | ISA | Runtime | Repo |
+|------|-----|---------|------|
+| **AP (this repo)** | ARMv7-A / ARMv8-A | TamaGo (Go) | `aspeed-go` |
+| RoT (AST10x0, BootMCU) | ARMv7E-M / RV32 | Embassy (Rust) | `aspeed-mcu-runtime/app-rot` |
+| Coprocessor SSP/TSP | ARMv7-M / ARMv7E-M | Embassy (Rust) | `aspeed-mcu-runtime/app-coprocessor/ssp` |
+| Coprocessor ColdFire | M68K (ColdFire V1) | async.h (C) | `aspeed-mcu-runtime/app-coprocessor/coldfire` |
+
+The AP communicates with coprocessors via hardware mailbox IPC and
+MCTP/PLDM. Sensor data is collected by coprocessor cores and delivered
+to the AP on request.
 
 ## Design
 
@@ -82,9 +100,7 @@ The chiptool Go backend generates structs with `Base uintptr` fields and `Read<R
 
 ## Supported chips (planned)
 
-| Chip | Core | Status |
-|------|------|--------|
-| AST2600 SSP | Cortex-M3 | PAC planned (Phase D in aspeed-data) |
-| AST2500 | ColdFire V1 | PAC planned |
-| AST2400 | ColdFire V1 | PAC planned |
-| AST2700 SSP/TSP | Cortex-M4F | PAC planned |
+| Chip | Core | Target | Status |
+|------|------|--------|--------|
+| AST2600 | Cortex-A7 (AP) | `GOARCH=arm` | PAC generated, HAL planned |
+| AST2700 | Cortex-A35 ×4 (AP) | `GOARCH=arm64` | PAC generated, HAL planned |
