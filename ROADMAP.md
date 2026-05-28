@@ -9,21 +9,32 @@
 | A-3 | Unit tests for all reg functions | ✅ |
 | A-4 | `go build ./...` and `go test ./...` verified | ✅ |
 
-## Phase B: PAC population (blocked on aspeed-data Phase D)
+## Phase B: PAC population (partially unblocked)
 
-The chiptool Go backend (`generate::go`) is implemented in the `chiptool` fork. Before Phase B can start:
+The chiptool Go backend (`generate::go`) is implemented and wired into
+`aspeed-data-gen`.  Generated Go PAC files for all five chip targets now
+live in `aspeed-data/aspeed-go-pac/` and are produced by `cargo run -p
+aspeed-data-gen`.
 
-1. Verify chiptool Go backend output compiles against `github.com/kyanitecomputer/aspeed-go/reg` (Task 14 in migration plan).
-2. Wire Go output into `aspeed-data-gen` for at least one chip.
-3. Copy generated files into `pac/`.
+The generated module is `github.com/kyanitecomputer/aspeed-data/aspeed-go-pac`
+and it imports `github.com/kyanitecomputer/aspeed-go/reg` for register
+access.  For local development use a `go.work` file:
 
-Once PAC is populated:
+```sh
+go 1.24
+use .
+use ../aspeed-data/aspeed-go-pac
+```
 
-| Task | Description |
-|------|-------------|
-| B-1 | AST2600 UART driver using generated `uart_v1` PAC struct |
-| B-2 | AST2600 GPIO driver using generated `gpio_v1` PAC struct |
-| B-3 | AST2600 IPC doorbell driver (CA35 side, via `ipc_v1`) |
+The Go PAC is generated but **not yet consumed by any HAL driver in this
+repo**.  The `hal/` packages remain stubs until the tasks below are done.
+
+| Task | Description | Status |
+|------|-------------|--------|
+| B-0 | chiptool Go backend wired into aspeed-data-gen | ✅ |
+| B-1 | AST2600 UART driver using generated `uart_v1` PAC struct | ❌ |
+| B-2 | AST2600 GPIO driver using generated `gpio_v1` PAC struct | ❌ |
+| B-3 | AST2600 IPC doorbell driver (CA35 side, via `ipc_v1`) | ❌ |
 
 ## Phase C: TamaGo integration
 
