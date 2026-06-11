@@ -172,64 +172,175 @@ func (c *Controller) w(off uint32, v uint32)  { reg.Write(c.port.Base + off, v) 
 func (c *Controller) scuUnlock()              { reg.Write(c.port.SCUBase+scuProtect, scuProtectKey) }
 func (c *Controller) scuLock()                { reg.Write(c.port.SCUBase+scuProtect, 1) }
 
-// EnableClockReset applies the SCU-level bring-up for the port: select the
-// device (gadget) function mux, assert reset, enable the port clock, wait for
-// the PLL to lock, then deassert reset. Mirrors u-boot usb_pinctrl +
-// usb_clk_enable_reset.
-func (c *Controller) EnableClockReset() {
-	p := c.port
-	c.scuUnlock()
-	if p.FuncMux != 0 {
-		reg.MaskWrite32(uintptr(p.SCUBase+p.FuncMux), p.FuncMask, p.FuncBits)
-	}
-	reg.Write(p.SCUBase+scuRstCtrl2, p.ResetBit)   // assert reset
-	reg.Write(p.SCUBase+scuClkStopClr, p.ClockBit) // enable clock (clear stop)
-	c.scuLock()
-
-	time.Sleep(10 * time.Millisecond) // wait PLL lock
-
-	c.scuUnlock()
-	reg.Write(p.SCUBase+scuRstCtrl2Clr, p.ResetBit) // deassert reset
-	c.scuLock()
-
-	time.Sleep(time.Millisecond)
+// Step records one observable bring-up action for diagnostics: the register it
+// touched, its value before and after the write, and the bits that were
+// expected to change. It lets a caller print exactly where a bring-up goes
+// wrong (e.g. a clock that stays gated because the SCU is locked, or a function
+// mux that doesn't take because the write hit a read-only field).
+type Step struct {
+	Name    string // human-readable action
+	RegName string // register touched ("" for pure delays)
+	Addr    uint32 // absolute register address
+	Before  uint32 // value read before the write
+	After   uint32 // value read back after the write
+	WantSet uint32 // bits that After must have SET   (0 = not checked)
+	WantClr uint32 // bits that After must have CLEAR (0 = not checked)
+	Note    string // extra context
 }
 
-// initHW enables SRAM access, brings the PHY up, and soft-resets the root hub.
-// Mirrors u-boot usb_init (with the Linux txfifo-retry quirk for the affected
-// parts). It leaves the controller ready but NOT yet connected to the host.
-func (c *Controller) initHW() {
+// Checked reports whether the step has an expected outcome to verify.
+func (s Step) Checked() bool { return s.WantSet != 0 || s.WantClr != 0 }
+
+// OK reports whether the observed After value matches the expectation. Steps
+// with no expectation (delays, informational reads) are always OK.
+func (s Step) OK() bool {
+	if s.WantSet != 0 && s.After&s.WantSet != s.WantSet {
+		return false
+	}
+	if s.WantClr != 0 && s.After&s.WantClr != 0 {
+		return false
+	}
+	return true
+}
+
+// InitSteps runs the full controller bring-up short of the host-visible attach
+// — SCU device-function mux, reset assert, clock enable, PLL wait, reset
+// deassert, PHY SRAM enable, PHY clock on, root-hub soft reset, and the
+// txfifo-retry quirk — returning one Step per action with before/after register
+// values and expectations. Call Connect afterwards to make the vHub visible to
+// the host. This is the single source of truth for the bring-up; Init runs it
+// and discards the trace.
+func (c *Controller) InitSteps() []Step {
 	p := c.port
+	steps := make([]Step, 0, 12)
+	rd := func(off uint32) uint32 { return reg.Read(p.SCUBase + off) }
+
+	// Keep the SCU unlocked for the whole clock/reset sequence.
+	lockBefore := rd(scuProtect)
+	c.scuUnlock()
+	steps = append(steps, Step{
+		Name: "unlock SCU", RegName: "SCU_PROTECT", Addr: p.SCUBase + scuProtect,
+		Before: lockBefore, After: rd(scuProtect),
+		Note: "write key 0x1688a8a8; readback of 0 means unlocked/writable",
+	})
+
+	// Select the device (gadget) port function mux.
+	if p.FuncMux != 0 {
+		before := rd(p.FuncMux)
+		reg.MaskWrite32(uintptr(p.SCUBase+p.FuncMux), p.FuncMask, p.FuncBits)
+		steps = append(steps, Step{
+			Name: "select device (gadget) function mux", RegName: "SCU_USB_MULTI_CTRL",
+			Addr: p.SCUBase + p.FuncMux, Before: before, After: rd(p.FuncMux),
+			WantSet: p.FuncBits, WantClr: p.FuncMask &^ p.FuncBits,
+			Note: "port routed to the vHub device controller",
+		})
+	}
+
+	// Assert reset.
+	{
+		before := rd(scuRstCtrl2)
+		reg.Write(p.SCUBase+scuRstCtrl2, p.ResetBit)
+		steps = append(steps, Step{
+			Name: "assert port reset", RegName: "SCU_RST_CTRL2",
+			Addr: p.SCUBase + scuRstCtrl2, Before: before, After: rd(scuRstCtrl2),
+			WantSet: p.ResetBit, Note: "reset held while the clock spins up",
+		})
+	}
+
+	// Enable the port clock (clear its stop bit); observe CLK_STOP.
+	{
+		before := rd(scuClkStop)
+		reg.Write(p.SCUBase+scuClkStopClr, p.ClockBit)
+		steps = append(steps, Step{
+			Name: "enable port clock (clear stop)", RegName: "SCU_CLK_STOP",
+			Addr: p.SCUBase + scuClkStop, Before: before, After: rd(scuClkStop),
+			WantClr: p.ClockBit, Note: "stop bit must read 0 = clock running",
+		})
+	}
+
+	time.Sleep(10 * time.Millisecond) // PLL lock
+	steps = append(steps, Step{Name: "wait 10ms for PLL lock"})
+
+	// Deassert reset.
+	{
+		before := rd(scuRstCtrl2)
+		reg.Write(p.SCUBase+scuRstCtrl2Clr, p.ResetBit)
+		steps = append(steps, Step{
+			Name: "deassert port reset", RegName: "SCU_RST_CTRL2",
+			Addr: p.SCUBase + scuRstCtrl2, Before: before, After: rd(scuRstCtrl2),
+			WantClr: p.ResetBit, Note: "reset released; controller now live",
+		})
+	}
+	c.scuLock()
+	time.Sleep(time.Millisecond)
+
+	// Controller reachability: after clock+reset, CTRL must be readable and not
+	// stuck all-ones (all-ones/all-zero usually means unclocked or in reset).
+	ctrlRaw := c.r(regCTRL)
+	steps = append(steps, Step{
+		Name: "probe controller reachability", RegName: "VHUB_CTRL",
+		Addr: p.Base + regCTRL, Before: ctrlRaw, After: ctrlRaw,
+		Note: "0xffffffff => controller not clocked / not mapped",
+	})
 
 	// Enable SRAM access (die-specific bits in PHY_CTRL).
-	v := c.r(regPHYCTRL)
-	if p.IODie {
-		v |= phyIODieSRAMEn | phyIODieAHBAddr34
-	} else {
-		v |= phyCPUDieSRAMEn
+	{
+		before := c.r(regPHYCTRL)
+		want := uint32(phyCPUDieSRAMEn)
+		if p.IODie {
+			want = phyIODieSRAMEn | phyIODieAHBAddr34
+		}
+		c.w(regPHYCTRL, before|want)
+		steps = append(steps, Step{
+			Name: "enable PHY SRAM access", RegName: "VHUB_PHY_CTRL",
+			Addr: p.Base + regPHYCTRL, Before: before, After: c.r(regPHYCTRL),
+			WantSet: want, Note: "DMA needs SRAM access enabled",
+		})
 	}
-	c.w(regPHYCTRL, v)
 
 	// PHY clock on, hold internal PHY reset off.
-	c.w(regCTRL, ctrlPHYClk|ctrlPHYResetDis)
-
-	// Soft-reset the root hub.
-	c.w(regSWRESET, swResetRootHub)
-	time.Sleep(time.Microsecond)
-	c.w(regSWRESET, 0)
-
-	if p.TXFIFORetryQuirk {
-		c.w(regPHYCTRL, c.r(regPHYCTRL)|phyFIFOForceRetry)
+	{
+		before := c.r(regCTRL)
+		c.w(regCTRL, ctrlPHYClk|ctrlPHYResetDis)
+		steps = append(steps, Step{
+			Name: "enable PHY clock, hold PHY reset off", RegName: "VHUB_CTRL",
+			Addr: p.Base + regCTRL, Before: before, After: c.r(regCTRL),
+			WantSet: ctrlPHYClk | ctrlPHYResetDis, Note: "PHY brought up",
+		})
 	}
+
+	// Soft-reset the root hub (pulse ROOT_HUB then clear).
+	{
+		before := c.r(regSWRESET)
+		c.w(regSWRESET, swResetRootHub)
+		time.Sleep(time.Microsecond)
+		c.w(regSWRESET, 0)
+		steps = append(steps, Step{
+			Name: "soft-reset root hub", RegName: "VHUB_SW_RESET",
+			Addr: p.Base + regSWRESET, Before: before, After: c.r(regSWRESET),
+			WantClr: swResetRootHub, Note: "pulse then release",
+		})
+	}
+
+	// txfifo-retry quirk for the affected parts.
+	if p.TXFIFORetryQuirk {
+		before := c.r(regPHYCTRL)
+		c.w(regPHYCTRL, before|phyFIFOForceRetry)
+		steps = append(steps, Step{
+			Name: "set txfifo-retry quirk", RegName: "VHUB_PHY_CTRL",
+			Addr: p.Base + regPHYCTRL, Before: before, After: c.r(regPHYCTRL),
+			WantSet: phyFIFOForceRetry, Note: "AST2700 SoC0 vHub0/vHubB0 workaround",
+		})
+	}
+
+	return steps
 }
 
 // Init performs the full controller bring-up short of the host-visible attach:
 // SCU clock/reset/mux, PHY enable, and root-hub soft reset. Call Connect
-// afterwards to make the vHub visible to the host.
-func (c *Controller) Init() {
-	c.EnableClockReset()
-	c.initHW()
-}
+// afterwards to make the vHub visible to the host. Use InitSteps for a
+// step-by-step diagnostic trace.
+func (c *Controller) Init() { c.InitSteps() }
 
 // Connect asserts the upstream D+ pull-up so the host detects and enumerates
 // the vHub, and enables automatic remote wakeup.
@@ -326,9 +437,19 @@ type Event struct {
 	Name string
 }
 
+func filterEvents(all []Event, v uint32) []Event {
+	out := make([]Event, 0, len(all))
+	for _, e := range all {
+		if v&e.Bit != 0 {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // DecodeEvents returns the named interrupt sources present in an ISR value.
 func DecodeEvents(isr uint32) []Event {
-	all := []Event{
+	return filterEvents([]Event{
 		{irqHubEP0Setup, "HUB_EP0_SETUP"},
 		{irqHubEP0OutAck, "HUB_EP0_OUT_ACK"},
 		{irqHubEP0InAck, "HUB_EP0_IN_ACK"},
@@ -339,12 +460,45 @@ func DecodeEvents(isr uint32) []Event {
 		{irqDevice1, "DEVICE1"},
 		{irqEPPoolAckStall, "EP_POOL_ACK_STALL"},
 		{irqEPPoolNak, "EP_POOL_NAK"},
+	}, isr)
+}
+
+// DecodeCtrl returns the named control bits set in a CTRL register value.
+func DecodeCtrl(ctrl uint32) []Event {
+	return filterEvents([]Event{
+		{ctrlUpstreamConnect, "UPSTREAM_CONNECT"},
+		{ctrlFullSpeedOnly, "FULL_SPEED_ONLY"},
+		{ctrlClkStopSuspend, "CLK_STOP_SUSPEND"},
+		{ctrlAutoRemoteWakeup, "AUTO_REMOTE_WAKEUP"},
+		{ctrlPHYResetDis, "PHY_RESET_DIS"},
+		{ctrlSplitIn, "SPLIT_IN"},
+		{ctrlISORspCtrl, "ISO_RSP_CTRL"},
+		{ctrlLongDesc, "LONG_DESC"},
+		{ctrlEnlargeFIFO, "ENLARGE_FIFO"},
+		{ctrlPHYClk, "PHY_CLK"},
+	}, ctrl)
+}
+
+// DecodePHY returns the named PHY_CTRL bits set in a value.
+func DecodePHY(phy uint32) []Event {
+	return filterEvents([]Event{
+		{phyCPUDieSRAMEn, "CPU_DIE_SRAM_EN"},
+		{phyIODieAHBAddr34, "IO_DIE_AHBM_ADDR34"},
+		{phyIODieSRAMEn, "IO_DIE_SRAM_EN"},
+		{phyFIFOForceRetry, "FIFO_FORCE_RETRY"},
+	}, phy)
+}
+
+// MuxMode classifies a port function-mux register value for the given port:
+// "device" (gadget, the value we program), "host/other", or "n/a" if the port
+// has no mux. The raw masked value is returned for display.
+func (p Port) MuxMode(funcMuxVal uint32) (mode string, masked uint32) {
+	if p.FuncMux == 0 {
+		return "n/a", 0
 	}
-	out := make([]Event, 0, len(all))
-	for _, e := range all {
-		if isr&e.Bit != 0 {
-			out = append(out, e)
-		}
+	masked = funcMuxVal & p.FuncMask
+	if masked == p.FuncBits {
+		return "device", masked
 	}
-	return out
+	return "host/other", masked
 }
