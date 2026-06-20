@@ -98,6 +98,21 @@ const (
 	phyFIFOForceRetry = 1 << 13 // SoC0 vHub0/vHubB0 txfifo-retry quirk.
 )
 
+// USB2 PHY analog control window (PHY_CTL_STS_1..4), relative to Port.PHYBase.
+// On the AST2700 the per-port USB2 PHY lives inside the vHubA1/vHubB1 register
+// block (base 0x12011800 / 0x12021800), gated by the PORTx_VHUB reset — it must
+// be brought out of reset and tuned before any vHub device core on that port
+// (including the EHCI-companion vHubA0/vHubB0) will clock and accept writes.
+const (
+	phyCtlSts2 = 0x04 // PHY_CTL_STS_2: reference-clock-rate select.
+	phyCtlSts3 = 0x08 // PHY_CTL_STS_3: pre-emphasis current.
+
+	phyCtlSts2ClkRateMask = 0x3 << 26 // [27:26] vHub1 clock rate.
+	phyCtlSts2ClkRate60M  = 0x3 << 26 // b'11 = 60 MHz.
+	phyCtlSts3PreEmphMask  = 0x3 << 21 // [22:21] pre-emphasis current.
+	phyCtlSts3PreEmph2     = 0x2 << 21 // b'10 = setting 2.
+)
+
 // SCU register offsets (shared by SCU0 @ 0x12c0_2000 and SCU1 @ 0x14c0_2000).
 // Resets for USB clock IDs >= 32 live in RST_CTRL2 (0x220 assert / 0x224 clear);
 // clock gates are cleared (enabled) by writing to CLK_STOP + 0x04.
@@ -127,6 +142,14 @@ type Port struct {
 	FuncMask uint32 // Mux field mask.
 	FuncBits uint32 // Mux value selecting device (gadget) mode.
 
+	// PHYResetBit is the RST_CTRL2 bit for the port's shared USB2 PHY
+	// (PORTx_VHUB, distinct from this controller's own ResetBit). It gates the
+	// PHY that clocks the vHub device core, so it must be deasserted alongside
+	// ResetBit. PHYBase is that PHY's analog control window (PHY_CTL_STS_1..4).
+	// Both 0 for controllers that carry their own PHY.
+	PHYResetBit uint32
+	PHYBase     uint32
+
 	IODie            bool // true for die1 (IO-die) controllers.
 	TXFIFORetryQuirk bool // set PHY FIFO_FORCE_RETRY (SoC0 vHub0/vHubB0).
 }
@@ -138,20 +161,25 @@ type Port struct {
 // pinctrl group table.
 var (
 	// VHubA0 is the primary DC-SCM gadget port (port A, device mux already set
-	// by the board DTS). clk PORTAUSB2CLK, rst PORTA_VHUB_EHCI.
+	// by the board DTS). clk PORTAUSB2CLK, controller rst PORTA_VHUB_EHCI;
+	// the shared port-A USB2 PHY is inside vHubA1 (0x12011800), gated by
+	// PORTA_VHUB.
 	VHubA0 = Port{
 		Name: "vhuba0", Base: 0x12060000, SCUBase: 0x12c02000, IRQ: 33,
 		ClockBit: 1 << 14, ResetBit: 1 << 6,
 		FuncMux: 0x410, FuncMask: 0x3 << 24, FuncBits: 0x2 << 24,
+		PHYResetBit: 1 << 0, PHYBase: 0x12011800,
 		TXFIFORetryQuirk: true,
 	}
 
-	// VHubB0 is the secondary DC-SCM gadget port (port B).
-	// clk PORTBUSB2CLK, rst PORTB_VHUB_EHCI.
+	// VHubB0 is the secondary DC-SCM gadget port (port B). clk PORTBUSB2CLK,
+	// controller rst PORTB_VHUB_EHCI; shared port-B USB2 PHY inside vHubB1
+	// (0x12021800), gated by PORTB_VHUB.
 	VHubB0 = Port{
 		Name: "vhubb0", Base: 0x12062000, SCUBase: 0x12c02000, IRQ: 37,
 		ClockBit: 1 << 7, ResetBit: 1 << 7,
 		FuncMux: 0x410, FuncMask: 0x3 << 28, FuncBits: 0x2 << 28,
+		PHYResetBit: 1 << 3, PHYBase: 0x12021800,
 		TXFIFORetryQuirk: true,
 	}
 )
@@ -221,7 +249,7 @@ func (c *Controller) InitSteps() []Step {
 	steps = append(steps, Step{
 		Name: "unlock SCU", RegName: "SCU_PROTECT", Addr: p.SCUBase + scuProtect,
 		Before: lockBefore, After: rd(scuProtect),
-		Note: "write key 0x1688a8a8; readback of 0 means unlocked/writable",
+		Note: "write key 0x1688a8a8 (0x000 reads back the silicon revision id)",
 	})
 
 	// Select the device (gadget) port function mux.
@@ -261,27 +289,65 @@ func (c *Controller) InitSteps() []Step {
 	time.Sleep(10 * time.Millisecond) // PLL lock
 	steps = append(steps, Step{Name: "wait 10ms for PLL lock"})
 
-	// Deassert reset.
+	// Deassert reset — both this controller AND the shared USB2 PHY reset
+	// (PORTx_VHUB). The PHY gates the UTMI clock that feeds the vHub device
+	// core; without releasing it the core registers (CTRL, SW_RESET) never
+	// clock and silently drop writes.
 	{
+		mask := p.ResetBit | p.PHYResetBit
 		before := rd(scuRstCtrl2)
-		reg.Write(p.SCUBase+scuRstCtrl2Clr, p.ResetBit)
+		reg.Write(p.SCUBase+scuRstCtrl2Clr, mask)
 		steps = append(steps, Step{
-			Name: "deassert port reset", RegName: "SCU_RST_CTRL2",
+			Name: "deassert controller + PHY reset", RegName: "SCU_RST_CTRL2",
 			Addr: p.SCUBase + scuRstCtrl2, Before: before, After: rd(scuRstCtrl2),
-			WantClr: p.ResetBit, Note: "reset released; controller now live",
+			WantClr: mask, Note: "releases vHub core and the shared USB2 PHY",
 		})
 	}
 	c.scuLock()
 	time.Sleep(time.Millisecond)
 
-	// Controller reachability: after clock+reset, CTRL must be readable and not
-	// stuck all-ones (all-ones/all-zero usually means unclocked or in reset).
-	ctrlRaw := c.r(regCTRL)
-	steps = append(steps, Step{
-		Name: "probe controller reachability", RegName: "VHUB_CTRL",
-		Addr: p.Base + regCTRL, Before: ctrlRaw, After: ctrlRaw,
-		Note: "0xffffffff => controller not clocked / not mapped",
-	})
+	// Tune the shared USB2 PHY (inside the vHubx1 block): reference clock rate
+	// and pre-emphasis, matching the vendor usb_usb2_init. Must happen after the
+	// PHY reset is released and before the core is brought up.
+	if p.PHYBase != 0 {
+		{
+			addr := p.PHYBase + phyCtlSts2
+			before := reg.Read(addr)
+			reg.MaskWrite32(uintptr(addr), phyCtlSts2ClkRateMask, phyCtlSts2ClkRate60M)
+			steps = append(steps, Step{
+				Name: "set USB2 PHY clock rate (60MHz)", RegName: "PHY_CTL_STS_2",
+				Addr: addr, Before: before, After: reg.Read(addr),
+				WantSet: phyCtlSts2ClkRate60M, Note: "PHY [27:26]=b11 (inside vHubx1)",
+			})
+		}
+		{
+			addr := p.PHYBase + phyCtlSts3
+			before := reg.Read(addr)
+			reg.MaskWrite32(uintptr(addr), phyCtlSts3PreEmphMask, phyCtlSts3PreEmph2)
+			steps = append(steps, Step{
+				Name: "set USB2 PHY pre-emphasis", RegName: "PHY_CTL_STS_3",
+				Addr: addr, Before: before, After: reg.Read(addr),
+				WantSet: phyCtlSts3PreEmph2, WantClr: phyCtlSts3PreEmphMask &^ phyCtlSts3PreEmph2,
+				Note: "PHY [22:21]=b10 (inside vHubx1)",
+			})
+		}
+	}
+
+	// Controller reachability: after clock+reset+PHY, CTRL must be writable.
+	// A write-probe is the reliable test (a mere read can return a plausible
+	// reset value even when the core is unclocked and dropping writes).
+	{
+		before := c.r(regCTRL)
+		c.w(regCTRL, before|ctrlPHYResetDis)
+		after := c.r(regCTRL)
+		c.w(regCTRL, before) // restore
+		steps = append(steps, Step{
+			Name: "probe controller write-ability", RegName: "VHUB_CTRL",
+			Addr: p.Base + regCTRL, Before: before, After: after,
+			WantSet: ctrlPHYResetDis,
+			Note: "toggles PHY_RESET_DIS; if it doesn't stick the core is unclocked (PHY not up)",
+		})
+	}
 
 	// Enable SRAM access (die-specific bits in PHY_CTRL).
 	{
@@ -390,6 +456,12 @@ type Status struct {
 	SCUClkStop uint32
 	SCUReset   uint32
 	SCUFuncMux uint32
+
+	// Shared USB2 PHY analog control (inside the vHubx1 block), valid when the
+	// port has a PHYBase.
+	HasPHY     bool
+	PHYCtlSts2 uint32
+	PHYCtlSts3 uint32
 }
 
 // Status reads the controller and SCU registers into a snapshot.
@@ -409,6 +481,11 @@ func (c *Controller) Status() Status {
 	}
 	if p.FuncMux != 0 {
 		s.SCUFuncMux = reg.Read(p.SCUBase + p.FuncMux)
+	}
+	if p.PHYBase != 0 {
+		s.HasPHY = true
+		s.PHYCtlSts2 = reg.Read(p.PHYBase + phyCtlSts2)
+		s.PHYCtlSts3 = reg.Read(p.PHYBase + phyCtlSts3)
 	}
 	return s
 }
