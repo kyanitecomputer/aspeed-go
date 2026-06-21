@@ -154,31 +154,54 @@ type Port struct {
 	TXFIFORetryQuirk bool // set PHY FIFO_FORCE_RETRY (SoC0 vHub0/vHubB0).
 }
 
-// Predefined DC-SCM-enabled die0 gadget ports.
+// Predefined die0 vHub ports.
 //
-// Port-A/B function mux (SCU0 0x410): device mode selects bits[25:24]=0b10
-// (USB2AD) for port A and bits[29:28]=0b10 (USB2BD) for port B, per the u-boot
-// pinctrl group table.
+// SCU0 0x410 routes each port through three fields (per the vendor
+// usb_func_init): PortA vhub_ehci[25:24], u2_xhci[3:2], u3_xhci[1:0]; PortB
+// vhub_ehci[29:28], u2_xhci[7:6], u3_xhci[5:4]. Only *vHub1* can be routed to
+// the physical USB2 PHY (function VHUB_PHY: u2_xhci = 1), so vHub1 is the
+// host-facing gadget. vHub0 (the EHCI-companion) only routes to the internal
+// BMC EHCI host (function EHCI_VHUB: vhub_ehci = 0) and is not visible to an
+// external host.
 var (
-	// VHubA0 is the primary DC-SCM gadget port (port A, device mux already set
-	// by the board DTS). clk PORTAUSB2CLK, controller rst PORTA_VHUB_EHCI;
-	// the shared port-A USB2 PHY is inside vHubA1 (0x12011800), gated by
-	// PORTA_VHUB.
+	// VHubA1 is the host-facing port-A gadget: vHub1 routed to the physical
+	// USB2 PHY (VHUB_PHY). This is the controller the vendor u-boot/Zephyr USB
+	// recovery uses. clk PORTAUSB2CLK, rst PORTA_VHUB (covers the controller and
+	// its in-block USB2 PHY). Mux: u2_xhci[3:2]=1, vhub_ehci[25:24]=0.
+	VHubA1 = Port{
+		Name: "vhuba1", Base: 0x12011000, SCUBase: 0x12c02000, IRQ: 32,
+		ClockBit: 1 << 14, ResetBit: 1 << 0,
+		FuncMux: 0x410, FuncMask: (0x3 << 24) | (0x3 << 2), FuncBits: 1 << 2,
+		PHYBase: 0x12011800,
+	}
+
+	// VHubB1 is the host-facing port-B gadget. clk PORTBUSB2CLK, rst PORTB_VHUB.
+	// Mux: u2_xhci[7:6]=1, vhub_ehci[29:28]=0.
+	VHubB1 = Port{
+		Name: "vhubb1", Base: 0x12021000, SCUBase: 0x12c02000, IRQ: 36,
+		ClockBit: 1 << 7, ResetBit: 1 << 3,
+		FuncMux: 0x410, FuncMask: (0x3 << 28) | (0x3 << 6), FuncBits: 1 << 6,
+		PHYBase: 0x12021800,
+	}
+
+	// VHubA0 is the port-A EHCI-companion vHub. It routes only to the internal
+	// BMC EHCI host (EHCI_VHUB: vhub_ehci[25:24]=0), not to the external PHY, so
+	// an external host will not enumerate it. clk PORTAUSB2CLK, controller rst
+	// PORTA_VHUB_EHCI; its shared USB2 PHY is inside vHubA1 (0x12011800), gated
+	// by PORTA_VHUB.
 	VHubA0 = Port{
 		Name: "vhuba0", Base: 0x12060000, SCUBase: 0x12c02000, IRQ: 33,
 		ClockBit: 1 << 14, ResetBit: 1 << 6,
-		FuncMux: 0x410, FuncMask: 0x3 << 24, FuncBits: 0x2 << 24,
+		FuncMux: 0x410, FuncMask: 0x3 << 24, FuncBits: 0,
 		PHYResetBit: 1 << 0, PHYBase: 0x12011800,
 		TXFIFORetryQuirk: true,
 	}
 
-	// VHubB0 is the secondary DC-SCM gadget port (port B). clk PORTBUSB2CLK,
-	// controller rst PORTB_VHUB_EHCI; shared port-B USB2 PHY inside vHubB1
-	// (0x12021800), gated by PORTB_VHUB.
+	// VHubB0 is the port-B EHCI-companion vHub (internal; see VHubA0).
 	VHubB0 = Port{
 		Name: "vhubb0", Base: 0x12062000, SCUBase: 0x12c02000, IRQ: 37,
 		ClockBit: 1 << 7, ResetBit: 1 << 7,
-		FuncMux: 0x410, FuncMask: 0x3 << 28, FuncBits: 0x2 << 28,
+		FuncMux: 0x410, FuncMask: 0x3 << 28, FuncBits: 0,
 		PHYResetBit: 1 << 3, PHYBase: 0x12021800,
 		TXFIFORetryQuirk: true,
 	}
