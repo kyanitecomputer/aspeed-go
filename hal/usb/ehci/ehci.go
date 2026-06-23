@@ -105,18 +105,36 @@ const (
 	lineUndef   = 0x3
 )
 
-// USB2 PHY analog control window (PHY_CTL_STS_2/3), relative to Port.PHYBase.
-// The per-port USB2 PHY lives inside the sibling vHub register block (for Port
-// D that is vhubd @ 0x1412_2800); it shares the PORTD_VHUB_EHCI reset with the
-// EHCI controller and is tuned exactly like the die0 vHub PHY.
+// USB2 PHY control window, relative to Port.PHYBase. The per-port USB2 PHY
+// lives inside the sibling vHub register block (for Port D that is vhubd, PHY
+// window @ 0x1412_2800). It shares the PORTD_VHUB_EHCI reset with the EHCI
+// controller. PHY_CTL_STS_1 (+0x00) carries the SRAM-access enable; STS_2/3
+// carry the analog clock-rate and pre-emphasis tuning.
+//
+// Crucially, the PHY does not clock from reset-release alone: the owning vHub's
+// CTRL register (PHY_CLK | PHY_RESET_DIS) and its SRAM-access enable must be set
+// to bring the PHY up, exactly as for the die0 vHub gadget path. No Linux driver
+// does this for the generic-ehci host, so the bring-up must do it here.
 const (
-	phyCtlSts2 = 0x04
-	phyCtlSts3 = 0x08
+	phyCtlSts1 = 0x00 // SRAM-access enable + AHB master address bits.
+	phyCtlSts2 = 0x04 // reference clock rate select.
+	phyCtlSts3 = 0x08 // pre-emphasis current.
 
 	phyCtlSts2ClkRateMask = 0x3 << 26
 	phyCtlSts2ClkRate60M  = 0x3 << 26 // b'11 = 60 MHz.
 	phyCtlSts3PreEmphMask = 0x3 << 21
 	phyCtlSts3PreEmph2    = 0x2 << 21 // b'10 = setting 2.
+
+	// PHY_CTL_STS_1 (0x800) SRAM-access enable bits. Port C/D are on the IO die.
+	phyIODieAHBAddr34 = 1 << 5  // IO-die AHB master address bit 34.
+	phyIODieSRAMEn    = 1 << 10 // IO-die SRAM access enable.
+)
+
+// Sibling vHub CTRL register (base + 0x00) bits used to power the shared PHY.
+const (
+	vhubCtrl         = 0x00
+	vhubCtrlPHYReset = 1 << 11 // PHY_RESET_DIS: hold the internal PHY reset off.
+	vhubCtrlPHYClk   = 1 << 31 // PHY_CLK: enable the PHY clock.
 )
 
 // SCU register offsets. Resets for USB live in RST_CTRL2 (0x220 assert /
@@ -146,9 +164,16 @@ type Port struct {
 	FuncMask uint32 // routing field mask.
 	FuncBits uint32 // routing value selecting host (EHCI) mode.
 
-	// PHYBase is the shared USB2 PHY analog window (PHY_CTL_STS_*), gated by the
+	// PHYBase is the shared USB2 PHY control window (PHY_CTL_STS_*), gated by the
 	// same ResetBit; 0 to skip PHY tuning.
 	PHYBase uint32
+
+	// VHubBase is the sibling vHub controller that owns the shared USB2 PHY
+	// (vhubd for Port D). Its CTRL register must be written to clock the PHY and
+	// hold its reset off; 0 to skip PHY power-up. IODie selects the IO-die
+	// SRAM-enable bits in PHY_CTL_STS_1.
+	VHubBase uint32
+	IODie    bool
 }
 
 // EHCI3PortD is the DC-SCM physical USB port on die1 Port D: the EHCI host
@@ -160,7 +185,9 @@ var EHCI3PortD = Port{
 	ClkStopReg: 0x260, ClockBit: 1 << 18, // SCU1 CLK_STOP2 PORTDUSB2CLK.
 	ResetBit: 1 << 29, // SCU1 RST_CTRL2 PORTD_VHUB_EHCI.
 	FuncMux:  0x3b0, FuncMask: 0x3 << 2, FuncBits: 0x2 << 2, // USB2DH (host).
-	PHYBase: 0x14122800, // Port D USB2 PHY inside vhubd.
+	PHYBase:  0x14122800, // Port D USB2 PHY window inside vhubd.
+	VHubBase: 0x14122000, // vhubd controller (owns/clocks the Port D PHY).
+	IODie:    true,       // die1 IO-die SRAM-enable bits.
 }
 
 // Controller is a single AST2700 EHCI host controller.
@@ -312,6 +339,39 @@ func (c *Controller) InitSteps() []Step {
 		}
 	}
 
+	// Power up the shared USB2 PHY through the sibling vHub that owns it. The PHY
+	// tuning above only sets analog trims; the PHY does not actually clock until
+	// its owning vHub's SRAM-access is enabled and its CTRL PHY_CLK/PHY_RESET_DIS
+	// bits are set. Without this the EHCI port never sees a device connect.
+	if p.VHubBase != 0 {
+		{
+			addr := p.VHubBase + 0x800 + phyCtlSts1
+			want := uint32(phyIODieSRAMEn | phyIODieAHBAddr34)
+			if !p.IODie {
+				want = 1 << 4 // CPU-die SRAM enable.
+			}
+			before := reg.Read(addr)
+			reg.Write(addr, before|want)
+			steps = append(steps, Step{
+				Name: "enable PHY SRAM access (sibling vHub)", RegName: "PHY_CTL_STS_1",
+				Addr: addr, Before: before, After: reg.Read(addr),
+				WantSet: want, Note: "IO-die SRAM access bits in vhubd's PHY window",
+			})
+		}
+		{
+			addr := p.VHubBase + vhubCtrl
+			before := reg.Read(addr)
+			reg.Write(addr, before|vhubCtrlPHYClk|vhubCtrlPHYReset)
+			steps = append(steps, Step{
+				Name: "clock PHY on (sibling vHub CTRL)", RegName: "VHUB_CTRL",
+				Addr: addr, Before: before, After: reg.Read(addr),
+				WantSet: vhubCtrlPHYClk | vhubCtrlPHYReset,
+				Note: "PHY_CLK + PHY_RESET_DIS in vhubd bring the shared USB2 PHY up",
+			})
+		}
+		time.Sleep(5 * time.Millisecond) // let the PHY clock settle
+	}
+
 	// Cache the operational-register offset (CAPLENGTH). Reads garbage if the
 	// controller is unclocked; the HC reset below is the real reachability test.
 	capword := c.r(capCAPLENGTH)
@@ -460,8 +520,12 @@ type Status struct {
 	SCUFuncMux uint32
 
 	HasPHY     bool
+	PHYCtlSts1 uint32
 	PHYCtlSts2 uint32
 	PHYCtlSts3 uint32
+
+	HasVHub  bool
+	VHubCtrl uint32 // sibling vHub CTRL (PHY_CLK/PHY_RESET_DIS state).
 }
 
 // Status reads the controller and SCU registers into a snapshot. It uses the
@@ -491,10 +555,21 @@ func (c *Controller) Status() Status {
 	}
 	if p.PHYBase != 0 {
 		s.HasPHY = true
+		s.PHYCtlSts1 = reg.Read(p.PHYBase + phyCtlSts1)
 		s.PHYCtlSts2 = reg.Read(p.PHYBase + phyCtlSts2)
 		s.PHYCtlSts3 = reg.Read(p.PHYBase + phyCtlSts3)
 	}
+	if p.VHubBase != 0 {
+		s.HasVHub = true
+		s.VHubCtrl = reg.Read(p.VHubBase + vhubCtrl)
+	}
 	return s
+}
+
+// PHYClocked reports whether the shared USB2 PHY has been clocked via the
+// sibling vHub CTRL (PHY_CLK + PHY_RESET_DIS both set).
+func (s Status) PHYClocked() bool {
+	return s.VHubCtrl&(vhubCtrlPHYClk|vhubCtrlPHYReset) == (vhubCtrlPHYClk | vhubCtrlPHYReset)
 }
 
 // NPorts returns the number of root ports the controller reports.
