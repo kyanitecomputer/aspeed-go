@@ -477,30 +477,76 @@ func (c *Controller) PollConnect(d time.Duration) (portsc uint32, connected bool
 	}
 }
 
-// ResetPort drives a USB reset on the root port and returns the observed PORTSC
-// before and after. For a high-speed device the controller sets Port Enabled;
-// for a low/full-speed device the port stays disabled (line state K/J) and must
-// be handed to the companion controller. Only meaningful once a device is
-// connected (PORTSC.CCS set).
-func (c *Controller) ResetPort() (before, after uint32) {
-	before = c.op(opPORTSC0)
+// clearChange acknowledges the given PORTSC write-1-to-clear change bits without
+// perturbing the read/write control bits (power, enable) or triggering a reset.
+func (c *Controller) clearChange(bits uint32) {
+	cur := c.op(opPORTSC0)
+	c.opw(opPORTSC0, (cur&^portRWC&^portReset)|(bits&portRWC))
+}
 
-	// Drive reset: set PR, clear Port Enable, hold ~50ms, then clear PR.
-	v := (before &^ portRWC &^ portEnable) | portReset
+// ResetResult captures the trajectory of a root-port reset attempt so a caller
+// can see how the port settles after the reset is released — a high-speed
+// device may transiently read as disconnected during the reset/chirp handshake
+// before the controller enables the port, so a single post-reset sample is
+// unreliable.
+type ResetResult struct {
+	Before   uint32
+	Samples  []uint32 // PORTSC sampled across the settle window.
+	After    uint32
+	Attempts int
+	Enabled  bool
+	Speed    string
+}
+
+// resetOnce drives one USB reset on the root port: hold PR ~50ms, release it,
+// then sample PORTSC every 10ms for ~250ms while the port settles. It stops
+// early once the port is enabled (high-speed) or has clearly gone away.
+func (c *Controller) resetOnce(r *ResetResult) {
+	ps := c.op(opPORTSC0)
+	v := (ps &^ portRWC &^ portEnable) | portReset
 	c.opw(opPORTSC0, v)
 	time.Sleep(50 * time.Millisecond)
 	c.opw(opPORTSC0, v&^portReset)
 
-	// Wait for the reset to complete (PR clears) and the port to settle.
-	for i := 0; i < 100; i++ {
-		if c.op(opPORTSC0)&portReset == 0 {
+	for i := 0; i < 25; i++ {
+		time.Sleep(10 * time.Millisecond)
+		s := c.op(opPORTSC0)
+		r.Samples = append(r.Samples, s)
+		if s&portReset != 0 {
+			continue // HC still finishing the reset
+		}
+		if s&portEnable != 0 {
+			return // high-speed: port enabled, done
+		}
+	}
+}
+
+// ResetPort resets the root port and reports how it settled. It debounces the
+// connection (USB 2.0 §7.1.7.3), clears the connect-change, then drives up to
+// three reset attempts, stopping as soon as the port enables. Only meaningful
+// once a device is connected (PORTSC.CCS set).
+func (c *Controller) ResetPort() ResetResult {
+	var r ResetResult
+	r.Before = c.op(opPORTSC0)
+
+	time.Sleep(100 * time.Millisecond) // connect debounce
+	c.clearChange(portConnectChange)
+
+	for r.Attempts = 1; r.Attempts <= 3; r.Attempts++ {
+		c.resetOnce(&r)
+		if c.op(opPORTSC0)&portEnable != 0 {
 			break
 		}
-		time.Sleep(time.Millisecond)
+		// Not enabled: if the device is gone or clearly low/full-speed, stop.
+		if c.op(opPORTSC0)&portConnect == 0 {
+			break
+		}
 	}
-	time.Sleep(2 * time.Millisecond)
-	after = c.op(opPORTSC0)
-	return before, after
+
+	r.After = c.op(opPORTSC0)
+	r.Enabled = r.After&portEnable != 0
+	r.Speed = c.Status().Speed()
+	return r
 }
 
 // Status is a snapshot of the controller and its SCU wiring for diagnostics.
