@@ -484,46 +484,60 @@ func (c *Controller) clearChange(bits uint32) {
 	c.opw(opPORTSC0, (cur&^portRWC&^portReset)|(bits&portRWC))
 }
 
-// ResetResult captures the trajectory of a root-port reset attempt so a caller
-// can see how the port settles after the reset is released — a high-speed
-// device may transiently read as disconnected during the reset/chirp handshake
-// before the controller enables the port, so a single post-reset sample is
-// unreliable.
+// ResetAttempt records the key PORTSC read-backs around one reset pulse so a
+// caller can tell a write that never landed (PR does not read back set) from a
+// high-speed handshake that failed (PR asserts and clears but the port never
+// enables).
+type ResetAttempt struct {
+	Written     uint32 // value written to assert PortReset.
+	PRAsserted  uint32 // PORTSC read back immediately after writing PR=1.
+	DuringReset uint32 // PORTSC ~50ms in, PR still held.
+	AfterClear  uint32 // PORTSC right after writing PR=0.
+	Settled     uint32 // PORTSC after the post-reset settle poll.
+}
+
+// ResetResult captures one or more reset attempts and the final verdict.
 type ResetResult struct {
 	Before   uint32
-	Samples  []uint32 // PORTSC sampled across the settle window.
+	Attempts []ResetAttempt
 	After    uint32
-	Attempts int
 	Enabled  bool
 	Speed    string
 }
 
-// resetOnce drives one USB reset on the root port: hold PR ~50ms, release it,
-// then sample PORTSC every 10ms for ~250ms while the port settles. It stops
-// early once the port is enabled (high-speed) or has clearly gone away.
-func (c *Controller) resetOnce(r *ResetResult) {
+// resetOnce drives one USB reset pulse, capturing PORTSC at each key point:
+// right after asserting PR (to confirm the write landed), mid-reset, right
+// after releasing PR, and after a settle poll that waits for PR to clear and
+// the port to enable.
+func (c *Controller) resetOnce() ResetAttempt {
+	var a ResetAttempt
 	ps := c.op(opPORTSC0)
-	v := (ps &^ portRWC &^ portEnable) | portReset
-	c.opw(opPORTSC0, v)
-	time.Sleep(50 * time.Millisecond)
-	c.opw(opPORTSC0, v&^portReset)
+	a.Written = (ps &^ portRWC &^ portEnable) | portReset
 
-	for i := 0; i < 25; i++ {
+	c.opw(opPORTSC0, a.Written)
+	a.PRAsserted = c.op(opPORTSC0)
+	time.Sleep(50 * time.Millisecond)
+	a.DuringReset = c.op(opPORTSC0)
+
+	c.opw(opPORTSC0, a.Written&^portReset)
+	a.AfterClear = c.op(opPORTSC0)
+
+	// Settle: wait for the HC to clear PR (<=2ms spec) and the port to enable.
+	for i := 0; i < 30; i++ {
 		time.Sleep(10 * time.Millisecond)
 		s := c.op(opPORTSC0)
-		r.Samples = append(r.Samples, s)
-		if s&portReset != 0 {
-			continue // HC still finishing the reset
-		}
-		if s&portEnable != 0 {
-			return // high-speed: port enabled, done
+		if s&portReset == 0 && (s&portEnable != 0 || s&portConnect == 0) {
+			a.Settled = s
+			return a
 		}
 	}
+	a.Settled = c.op(opPORTSC0)
+	return a
 }
 
 // ResetPort resets the root port and reports how it settled. It debounces the
 // connection (USB 2.0 §7.1.7.3), clears the connect-change, then drives up to
-// three reset attempts, stopping as soon as the port enables. Only meaningful
+// three reset pulses, stopping as soon as the port enables. Only meaningful
 // once a device is connected (PORTSC.CCS set).
 func (c *Controller) ResetPort() ResetResult {
 	var r ResetResult
@@ -532,13 +546,10 @@ func (c *Controller) ResetPort() ResetResult {
 	time.Sleep(100 * time.Millisecond) // connect debounce
 	c.clearChange(portConnectChange)
 
-	for r.Attempts = 1; r.Attempts <= 3; r.Attempts++ {
-		c.resetOnce(&r)
-		if c.op(opPORTSC0)&portEnable != 0 {
-			break
-		}
-		// Not enabled: if the device is gone or clearly low/full-speed, stop.
-		if c.op(opPORTSC0)&portConnect == 0 {
+	for i := 0; i < 3; i++ {
+		a := c.resetOnce()
+		r.Attempts = append(r.Attempts, a)
+		if a.Settled&portEnable != 0 || a.Settled&portConnect == 0 {
 			break
 		}
 	}
