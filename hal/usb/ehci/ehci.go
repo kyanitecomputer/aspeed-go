@@ -519,7 +519,14 @@ func (c *Controller) resetOnce() ResetAttempt {
 	time.Sleep(50 * time.Millisecond)
 	a.DuringReset = c.op(opPORTSC0)
 
-	c.opw(opPORTSC0, a.Written&^portReset)
+	// Clear PortReset from a FRESH read, preserving every other control bit and
+	// not touching the write-1-to-clear change bits. This is critical: the
+	// ASPEED EHCI enables the port during the reset (PED reads 1 mid-reset), and
+	// in EHCI writing 0 to Port Enable *disables* the port — so clearing PR from
+	// the stale pre-reset value (PED=0) would immediately undo the enable. Mirror
+	// Linux ehci: temp &= ~(PORT_RWC_BITS | PORT_RESET).
+	cur := c.op(opPORTSC0)
+	c.opw(opPORTSC0, cur&^portRWC&^portReset)
 	a.AfterClear = c.op(opPORTSC0)
 
 	// Settle: wait for the HC to clear PR (<=2ms spec) and the port to enable.
