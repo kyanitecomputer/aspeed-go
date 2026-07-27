@@ -193,8 +193,9 @@ var EHCI3PortD = Port{
 // Controller is a single AST2700 EHCI host controller.
 type Controller struct {
 	port   Port
-	caplen uint32 // operational-register offset (cached after Init).
-	dma    DMA    // transfer-layer DMA backend (nil until SetDMA).
+	caplen uint32   // operational-register offset (cached after Init).
+	dma    DMA      // transfer-layer DMA backend (nil until SetDMA).
+	dbg    XferDebug // diagnostic snapshot of the last control transfer.
 }
 
 // New returns a controller for the given port.

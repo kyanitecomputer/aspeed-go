@@ -19,6 +19,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"time"
+
+	"github.com/kyanitecomputer/aspeed-go/reg"
 )
 
 // DMA supplies physically-addressable memory and cache maintenance to the
@@ -46,8 +48,38 @@ const (
 	opASYNCADDR = 0x18 // ASYNCLISTADDR: current async-list QH pointer.
 )
 
-// USBCMD async-schedule bits (in addition to those in ehci.go).
-const cmdIntAsyncAdv = 1 << 6 // interrupt on async advance doorbell.
+// USBCMD/USBSTS async-schedule bits (in addition to those in ehci.go).
+const (
+	cmdIntAsyncAdv = 1 << 6  // interrupt on async advance doorbell.
+	stsAsyncStatus = 1 << 15 // USBSTS: async schedule is running.
+)
+
+// hccp64bit is HCCPARAMS bit0: 64-bit addressing capability (CTRLDSSEGMENT +
+// extended qTD/QH pointers are honoured only when set).
+const hccp64bit = 1 << 0
+
+// XferDebug captures controller and descriptor state around a control transfer
+// for diagnostics when it fails.
+type XferDebug struct {
+	HCCParams uint32
+	USBCmd    uint32
+	USBSts    uint32
+	CtrlDSSeg uint32
+	AsyncAddr uint32
+	PortSC    uint32
+	QHPhys    uint64
+	QHToken   uint32 // QH overlay token.
+	QHCurQTD  uint32 // QH current qTD pointer.
+	SetupTok  uint32
+	DataTok   uint32
+	StatusTok uint32
+}
+
+// Addr64 reports whether the controller advertises 64-bit addressing.
+func (d XferDebug) Addr64() bool { return d.HCCParams&hccp64bit != 0 }
+
+// AsyncRunning reports whether the async schedule was running.
+func (d XferDebug) AsyncRunning() bool { return d.USBSts&stsAsyncStatus != 0 }
 
 // qTD token field bits/shifts.
 const (
@@ -226,6 +258,25 @@ func (c *Controller) ControlIn(addr uint8, mps uint16, setup [8]byte, data []byt
 	// Poll the STATUS qTD to completion.
 	err := c.waitQTD(statusPhysQTD, tdBuf[2*qtdBytes:3*qtdBytes], 1*time.Second)
 
+	// Capture diagnostic state before the schedule is torn down and the buffers
+	// are freed, so a failure can be root-caused.
+	d.Invalidate(qhPhys, qhBytes)
+	d.Invalidate(tdPhys, qtdBytes*3)
+	c.dbg = XferDebug{
+		HCCParams: reg.Read(c.port.Base + capHCCPARAMS),
+		USBCmd:    c.op(opUSBCMD),
+		USBSts:    c.op(opUSBSTS),
+		CtrlDSSeg: c.op(opCTRLDSSEG),
+		AsyncAddr: c.op(opASYNCADDR),
+		PortSC:    c.op(opPORTSC0),
+		QHPhys:    qhPhys,
+		QHToken:   binary.LittleEndian.Uint32(qhBuf[qhOverlay+qtdToken : qhOverlay+qtdToken+4]),
+		QHCurQTD:  binary.LittleEndian.Uint32(qhBuf[qhCurQTD : qhCurQTD+4]),
+		SetupTok:  binary.LittleEndian.Uint32(tdBuf[qtdToken : qtdToken+4]),
+		DataTok:   binary.LittleEndian.Uint32(tdBuf[qtdBytes+qtdToken : qtdBytes+qtdToken+4]),
+		StatusTok: binary.LittleEndian.Uint32(tdBuf[2*qtdBytes+qtdToken : 2*qtdBytes+qtdToken+4]),
+	}
+
 	// Stop the async schedule.
 	c.opw(opUSBCMD, c.op(opUSBCMD)&^cmdAsyncEn)
 
@@ -273,6 +324,9 @@ func (c *Controller) setReg(off, v uint32) { c.opw(off, v) }
 
 // SetDMA installs the DMA backend used by the transfer layer.
 func (c *Controller) SetDMA(d DMA) { c.dma = d }
+
+// Debug returns the diagnostic state captured during the last control transfer.
+func (c *Controller) Debug() XferDebug { return c.dbg }
 
 // USB standard request/descriptor constants.
 const (
