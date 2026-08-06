@@ -65,9 +65,12 @@ type XferDebug struct {
 	USBCmd    uint32
 	USBSts    uint32
 	CtrlDSSeg uint32
-	AsyncAddr uint32
+	AsyncAddr    uint32
+	AsyncAddrImm uint32 // ASYNCLISTADDR read back immediately after the write.
 	PortSC    uint32
 	QHPhys    uint64
+	QHLinkMem uint32 // QH horizontal link as it sits in DRAM (post-invalidate).
+	QHCharMem uint32 // QH endpoint-characteristics in DRAM.
 	QHToken   uint32 // QH overlay token.
 	QHCurQTD  uint32 // QH current qTD pointer.
 	SetupTok  uint32
@@ -253,6 +256,7 @@ func (c *Controller) ControlIn(addr uint8, mps uint16, setup [8]byte, data []byt
 	// Program the async schedule and run it.
 	c.setReg(opCTRLDSSEG, high32(qhPhys))
 	c.setReg(opASYNCADDR, low32(qhPhys)&^0x1f)
+	asyncImm := c.op(opASYNCADDR)
 	c.opw(opUSBCMD, c.op(opUSBCMD)|cmdRunStop|cmdAsyncEn)
 
 	// Poll the STATUS qTD to completion.
@@ -267,9 +271,12 @@ func (c *Controller) ControlIn(addr uint8, mps uint16, setup [8]byte, data []byt
 		USBCmd:    c.op(opUSBCMD),
 		USBSts:    c.op(opUSBSTS),
 		CtrlDSSeg: c.op(opCTRLDSSEG),
-		AsyncAddr: c.op(opASYNCADDR),
+		AsyncAddr:    c.op(opASYNCADDR),
+		AsyncAddrImm: asyncImm,
 		PortSC:    c.op(opPORTSC0),
 		QHPhys:    qhPhys,
+		QHLinkMem: binary.LittleEndian.Uint32(qhBuf[qhLink : qhLink+4]),
+		QHCharMem: binary.LittleEndian.Uint32(qhBuf[qhEndpChar : qhEndpChar+4]),
 		QHToken:   binary.LittleEndian.Uint32(qhBuf[qhOverlay+qtdToken : qhOverlay+qtdToken+4]),
 		QHCurQTD:  binary.LittleEndian.Uint32(qhBuf[qhCurQTD : qhCurQTD+4]),
 		SetupTok:  binary.LittleEndian.Uint32(tdBuf[qtdToken : qtdToken+4]),
