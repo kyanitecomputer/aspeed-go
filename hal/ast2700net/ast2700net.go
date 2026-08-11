@@ -1,7 +1,7 @@
 // Package ast2700net provides AST2700 Ethernet board bring-up helpers.
 package ast2700net
 
-import "github.com/kyanitecomputer/aspeed-go/reg"
+import "src.kyanite.computer/aspeed-go/reg"
 
 const (
 	SCUIOBase = 0x14c02000

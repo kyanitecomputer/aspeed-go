@@ -4,7 +4,7 @@ package otp
 import (
 	"errors"
 
-	"github.com/kyanitecomputer/aspeed-go/reg"
+	"src.kyanite.computer/aspeed-go/reg"
 )
 
 const (

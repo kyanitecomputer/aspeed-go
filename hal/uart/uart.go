@@ -1,7 +1,7 @@
 // Package uart provides helpers for ASPEED 16550-compatible UARTs.
 package uart
 
-import "github.com/kyanitecomputer/aspeed-go/reg"
+import "src.kyanite.computer/aspeed-go/reg"
 
 const (
 	rbrThr = 0x00

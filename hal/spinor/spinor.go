@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kyanitecomputer/aspeed-go/hal/flash"
-	"github.com/kyanitecomputer/aspeed-go/hal/spi"
+	"src.kyanite.computer/aspeed-go/hal/flash"
+	"src.kyanite.computer/aspeed-go/hal/spi"
 )
 
 // SPI NOR opcodes. Reads use the controller's memory-mapped auto-read window;

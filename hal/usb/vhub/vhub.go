@@ -23,7 +23,7 @@ package vhub
 import (
 	"time"
 
-	"github.com/kyanitecomputer/aspeed-go/reg"
+	"src.kyanite.computer/aspeed-go/reg"
 )
 
 // Global / root-hub register offsets, relative to the controller base.

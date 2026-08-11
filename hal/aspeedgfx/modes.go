@@ -1,6 +1,6 @@
 package aspeedgfx
 
-import "github.com/kyanitecomputer/aspeed-go/hal/edid"
+import "src.kyanite.computer/aspeed-go/hal/edid"
 
 // ASTDP firmware video-format indices, consumed by the DPMCU through the
 // DISPLAY_FORMAT word (DMEM 0xde0). These values match the ASPEED reference

@@ -20,7 +20,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/kyanitecomputer/aspeed-go/reg"
+	"src.kyanite.computer/aspeed-go/reg"
 )
 
 // DMA supplies physically-addressable memory and cache maintenance to the

@@ -1,4 +1,4 @@
-module github.com/kyanitecomputer/aspeed-go
+module src.kyanite.computer/aspeed-go
 
 go 1.24
 

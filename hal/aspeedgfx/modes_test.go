@@ -3,7 +3,7 @@ package aspeedgfx
 import (
 	"testing"
 
-	"github.com/kyanitecomputer/aspeed-go/hal/edid"
+	"src.kyanite.computer/aspeed-go/hal/edid"
 )
 
 func TestSelectMode(t *testing.T) {

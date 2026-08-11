@@ -6,7 +6,7 @@
 //
 // Intended use:
 //
-//	import "github.com/kyanitecomputer/aspeed-go/reg"
+//	import "src.kyanite.computer/aspeed-go/reg"
 //
 //	// Read the SCU protection register on AST2600
 //	v := reg.Read32(0x1E6E2000)

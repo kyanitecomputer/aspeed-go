@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kyanitecomputer/aspeed-go/hal/framebuffer"
-	"github.com/kyanitecomputer/aspeed-go/reg"
+	"src.kyanite.computer/aspeed-go/hal/framebuffer"
+	"src.kyanite.computer/aspeed-go/reg"
 )
 
 const (

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/kyanitecomputer/aspeed-go/reg"
+	"src.kyanite.computer/aspeed-go/reg"
 )
 
 // scratch creates a local uint32 and returns its address as a uintptr,

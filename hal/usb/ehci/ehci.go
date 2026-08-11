@@ -28,7 +28,7 @@ package ehci
 import (
 	"time"
 
-	"github.com/kyanitecomputer/aspeed-go/reg"
+	"src.kyanite.computer/aspeed-go/reg"
 )
 
 // EHCI capability registers, relative to the controller base.

@@ -3,7 +3,7 @@ package aspeedgfx
 import (
 	"errors"
 
-	"github.com/kyanitecomputer/aspeed-go/reg"
+	"src.kyanite.computer/aspeed-go/reg"
 )
 
 // DisplayPort TX AUX/HPD registers (DP base 0x12c0a000). Offsets and the AUX
