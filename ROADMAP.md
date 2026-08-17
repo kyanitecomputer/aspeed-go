@@ -16,8 +16,8 @@ The chiptool Go backend (`generate::go`) is implemented and wired into
 live in `aspeed-data/aspeed-go-pac/` and are produced by `cargo run -p
 aspeed-data-gen`.
 
-The generated module is `github.com/kyanitecomputer/aspeed-data/aspeed-go-pac`
-and it imports `github.com/kyanitecomputer/aspeed-go/reg` for register
+The generated module is `src.kyanite.computer/aspeed-data/aspeed-go-pac`
+and it imports `src.kyanite.computer/aspeed-go/reg` for register
 access.  For local development use a `go.work` file:
 
 ```sh
@@ -59,7 +59,7 @@ Once `aspeed-data` is pushed to `github.com/kyanitecomputer/aspeed-data`, the `p
 
 ```sh
 # Add aspeed-data as a Go module (future, once Go PAC is published)
-go get github.com/kyanitecomputer/aspeed-data/aspeed-go-pac@<sha>
+go get src.kyanite.computer/aspeed-data/aspeed-go-pac@<sha>
 ```
 
 Until then, generated files are copied manually into `pac/`.

@@ -2,6 +2,10 @@
 
 Go HAL for ASPEED SoC **main application processor (AP) cores**, targeting bare-metal [TamaGo](https://github.com/usbarmory/tamago) (`GOOS=tamago`) firmware.
 
+Part of the [Kyanite](https://github.com/kyanitecomputer) stack.
+
+> **Status:** experimental — expect breaking changes.
+
 ```
 https://github.com/kyanitecomputer/aspeed-go
 ```
@@ -44,7 +48,7 @@ aspeed-go/
 Generated Go PAC register structs live in [`aspeed-data/aspeed-go-pac/`](https://github.com/kyanitecomputer/aspeed-data). They are **not** copied into this repo — import them via Go module:
 
 ```go
-import "github.com/kyanitecomputer/aspeed-data/aspeed-go-pac/ast2600"
+import "src.kyanite.computer/aspeed-data/aspeed-go-pac/ast2600"
 ```
 
 ## Build and test
@@ -61,7 +65,7 @@ dagger call ci
 ## Using the reg package
 
 ```go
-import "github.com/kyanitecomputer/aspeed-go/reg"
+import "src.kyanite.computer/aspeed-go/reg"
 
 // Read the AST2600 SSP control register
 v := reg.Read32(0x1E6E2A00)
@@ -76,7 +80,7 @@ reg.ClearBits32(0x1E780000, 1<<4)
 
 ## Dependency on aspeed-data
 
-The generated PAC lives in [`aspeed-data/aspeed-go-pac/`](https://github.com/kyanitecomputer/aspeed-data) as a separate Go module (`github.com/kyanitecomputer/aspeed-data/aspeed-go-pac`). It imports `github.com/kyanitecomputer/aspeed-go/reg` for register access.
+The generated PAC lives in [`aspeed-data/aspeed-go-pac/`](https://github.com/kyanitecomputer/aspeed-data) as a separate Go module (`src.kyanite.computer/aspeed-data/aspeed-go-pac`). It imports `src.kyanite.computer/aspeed-go/reg` for register access.
 
 For local development, create a `go.work` file (gitignored) to redirect the module:
 
@@ -104,3 +108,17 @@ The chiptool Go backend generates structs with `Base uintptr` fields and `Read<R
 |------|------|--------|--------|
 | AST2600 | Cortex-A7 (AP) | `GOARCH=arm` | PAC generated, HAL planned |
 | AST2700 | Cortex-A35 ×4 (AP) | `GOARCH=arm64` | PAC generated, HAL planned |
+
+## Contributing
+
+See the org-wide [CONTRIBUTING guide](https://github.com/kyanitecomputer/.github/blob/main/CONTRIBUTING.md).
+Contributions are dual-licensed.
+
+## Security
+
+See the org-wide [SECURITY policy](https://github.com/kyanitecomputer/.github/blob/main/SECURITY.md).
+
+## License
+
+Dual-licensed under either of Apache-2.0 ([LICENSE-APACHE](LICENSE-APACHE)) or
+MIT ([LICENSE-MIT](LICENSE-MIT)) at your option.
