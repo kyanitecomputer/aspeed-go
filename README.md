@@ -6,10 +6,6 @@ Part of the [Kyanite](https://github.com/kyanitecomputer) stack.
 
 > **Status:** experimental — expect breaking changes.
 
-```
-https://github.com/kyanitecomputer/aspeed-go
-```
-
 ## Role in the system
 
 The AP cores (Cortex-A7 on AST2600, quad Cortex-A35 on AST2700) run bare-metal
