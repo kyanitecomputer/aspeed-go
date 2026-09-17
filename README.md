@@ -16,9 +16,9 @@ separate firmware:
 | Core | ISA | Runtime | Repo |
 |------|-----|---------|------|
 | **AP (this repo)** | ARMv7-A / ARMv8-A | TamaGo (Go) | `aspeed-go` |
-| RoT (AST10x0, BootMCU) | ARMv7E-M / RV32 | Embassy (Rust) | `aspeed-mcu-runtime/app-rot` |
-| Coprocessor SSP/TSP | ARMv7-M / ARMv7E-M | Embassy (Rust) | `aspeed-mcu-runtime/app-coprocessor/ssp` |
-| Coprocessor ColdFire | M68K (ColdFire V1) | async.h (C) | `aspeed-mcu-runtime/app-coprocessor/coldfire` |
+| RoT (AST10x0, BootMCU) | ARMv7E-M / RV32 | Embassy (Rust) | `mcu-runtime/app-rot` |
+| Coprocessor SSP/TSP | ARMv7-M / ARMv7E-M | Embassy (Rust) | `mcu-runtime/app-coprocessor/ssp` |
+| Coprocessor ColdFire | M68K (ColdFire V1) | async.h (C) | `mcu-runtime/app-coprocessor/coldfire` |
 
 The AP communicates with coprocessors via hardware mailbox IPC and
 MCTP/PLDM. Sensor data is collected by coprocessor cores and delivered
